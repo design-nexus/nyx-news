@@ -11,7 +11,7 @@ repository.workspace = true
 ammonia = "4.2"
 anyhow = "1.0.104"
 feed-rs = "=2.4.0"
-nyx-sync = { git = "https://github.com/design-nexus/nyx-core.git", rev = "918729504918ec344b3a853a5ce0ea2c9dbb7b5f" }
+nyx-sync = { git = "https://github.com/design-nexus/nyx-core.git", rev = "32f0c5e154fc44c763b8ecd80d35a3b298723afa" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 roxmltree = "0.21"
 scraper = "0.24"
@@ -23,5 +23,5 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-nyx-sync = { git = "https://github.com/design-nexus/nyx-core.git", rev = "918729504918ec344b3a853a5ce0ea2c9dbb7b5f", features = ["testutil"] }
+nyx-sync = { git = "https://github.com/design-nexus/nyx-core.git", rev = "32f0c5e154fc44c763b8ecd80d35a3b298723afa", features = ["testutil"] }
 serde_json = "1.0.151"
