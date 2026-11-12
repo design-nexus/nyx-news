@@ -382,6 +382,8 @@ fn rebuild_nav() {
     let group = widgets::label("TODAY", "nav-group");
     group.add_css_class("compact-hide");
     group.add_css_class("first");
+    // The first group in the app's accent, the others from the theme's [sections.news].
+    nyx_ui::sidebar::set_section(&group, nyx_ui::sidebar::ACCENT_SECTION);
     list.append(&group);
 
     let (headlines, _) = nav_button("view-list-symbolic", "Top Stories", "Today's top news");
@@ -411,6 +413,7 @@ fn rebuild_nav() {
 
     let group = widgets::label("TOPICS", "nav-group");
     group.add_css_class("compact-hide");
+    nyx_ui::sidebar::set_section(&group, "topics");
     list.append(&group);
 
     let disabled = prefs::get().disabled_categories;
