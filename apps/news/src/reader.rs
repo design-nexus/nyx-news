@@ -1,9 +1,12 @@
-//! The story. Opening one replaces the paper and loads the article text.
+//! The story. Opening one replaces the page and loads the article text. Its bar puts
+//! Open at the publisher first and Save beside it; Brief, Compare, Read aloud and
+//! Export sit in one menu. With summaries on, a short summary from Assistant leads.
 
 use crate::assistant_client;
 use crate::cmd;
 use crate::dialogs;
 use crate::html_text;
+use crate::look;
 use crate::note;
 use crate::paths;
 use crate::prefs;
@@ -13,29 +16,46 @@ use crate::widgets;
 use crate::window;
 use crate::worker;
 use gtk::prelude::*;
-use nyx_news_core::{AiFailure, ArticleListItem, Excerpt, finish};
+use nyx_news_core::{AiFailure, ArticleListItem, Excerpt};
+use nyx_ui::clamp::Clamp;
 use std::cell::{Cell, RefCell};
 
 thread_local! {
     static TITLE: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
-    static KICKER: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
+    static KICKER: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
     static COVER: RefCell<Option<gtk::Picture>> = const { RefCell::new(None) };
     static COVER_WRAP: RefCell<Option<gtk::Overlay>> = const { RefCell::new(None) };
-    static META: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
+    static META: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
     static BODY: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
-    static BRIEF_BODY: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
     static BRIEF_CARD: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
-    static AI_ROW: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
-    static PROGRESS: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
-    static PROGRESS_TEXT: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
+    static BRIEF_TITLE: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
+    static BRIEF_BODY: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
+    static BRIEF_CANCEL: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+    static BRIEF_TEXT: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    static TASK: RefCell<String> = const { RefCell::new(String::new()) };
+    static RUNNING: Cell<bool> = const { Cell::new(false) };
     static OPEN_ID: RefCell<Option<String>> = const { RefCell::new(None) };
     static OPEN_URL: RefCell<Option<String>> = const { RefCell::new(None) };
-    static SAVE: RefCell<Option<gtk::Button>> = const { RefCell::new(None) };
+    static BACK: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
+    static OPEN: RefCell<Option<(gtk::Button, gtk::Label)>> = const { RefCell::new(None) };
+    static SAVE: RefCell<Option<(gtk::Button, gtk::Label)>> = const { RefCell::new(None) };
     static PUBLISHER_BOX: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
     static GENERATION: Cell<u64> = const { Cell::new(0) };
+    static NARROW: Cell<bool> = const { Cell::new(false) };
 }
 
 const UNAVAILABLE: &str = "This story did not open. It is still at the publisher.";
+
+fn labeled(icon: &str, text: &str) -> (gtk::Button, gtk::Label) {
+    let button = gtk::Button::new();
+    let face = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    face.append(&gtk::Image::from_icon_name(icon));
+    let label = gtk::Label::new(Some(text));
+    face.append(&label);
+    button.set_child(Some(&face));
+    button.set_valign(gtk::Align::Center);
+    (button, label)
+}
 
 pub fn build() -> gtk::Box {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -43,48 +63,46 @@ pub fn build() -> gtk::Box {
     root.set_hexpand(true);
     root.set_vexpand(true);
 
-    let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    toolbar.add_css_class("toolbar");
+    let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    toolbar.add_css_class("page-bar");
+    toolbar.add_css_class("reader-bar");
 
-    let back = widgets_button("go-previous-symbolic", "Back to stories");
+    let (back, back_label) = labeled("go-previous-symbolic", "Top stories");
+    back.add_css_class("flat");
+    back.add_css_class("reader-back");
+    back.set_tooltip_text(Some("Back to the stories (Esc)"));
+    back_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     back.connect_clicked(|_| hide());
     toolbar.append(&back);
-
-    let back_label = widgets::label("Back", "toolbar-title");
-    toolbar.append(&back_label);
 
     let gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     gap.set_hexpand(true);
     toolbar.append(&gap);
 
-    let ai = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    ai.set_visible(prefs::get().summaries);
-    for (icon, tip, task) in [
-        ("document-edit-symbolic", "Summarize", "summary"),
-        ("view-paged-symbolic", "Brief", "brief"),
-        ("view-dual-symbolic", "Compare", "compare"),
-        ("audio-volume-high-symbolic", "Speak", "spoken"),
-    ] {
-        let button = widgets_button(icon, tip);
-        button.connect_clicked(move |_| start_brief(task));
-        ai.append(&button);
-    }
-    toolbar.append(&ai);
+    let (open, open_label) = labeled("nyx-news-external-symbolic", "Open at the publisher");
+    open.add_css_class("suggested-action");
+    open.set_tooltip_text(Some("Open at the publisher (O)"));
+    open.connect_clicked(|_| open_original());
+    toolbar.append(&open);
 
-    let save = widgets_button("bookmark-new-symbolic", "Save story (B)");
+    let (save, save_label) = labeled("user-bookmarks-symbolic", "Save");
+    save.add_css_class("save-toggle");
+    save.set_tooltip_text(Some("Save story (B)"));
     save.connect_clicked(|_| toggle_save());
+    toolbar.append(&save);
 
-    let copy = widgets_button("edit-copy-symbolic", "Copy story link");
+    let copy = widgets::bar_button("edit-copy-symbolic", "Copy link");
     copy.connect_clicked(|_| {
         if let Some(url) = OPEN_URL.with(|p| p.borrow().clone())
             && let Some(display) = gtk::gdk::Display::default()
         {
             display.clipboard().set_text(&url);
-            window::toast("Story link copied to clipboard");
+            window::toast("Story link copied");
         }
     });
+    toolbar.append(&copy);
 
-    let font_toggle = widgets_button("format-text-larger-symbolic", "Change text size");
+    let font_toggle = widgets::bar_button("nyx-news-textsize-symbolic", "Text size");
     font_toggle.connect_clicked(|_| {
         let next = match prefs::get().reader_font_scale.as_str() {
             "small" => "medium",
@@ -95,43 +113,19 @@ pub fn build() -> gtk::Box {
         update_font_size();
         window::toast(&format!("Text size: {next}"));
     });
-
-    let open = widgets_button("external-link-symbolic", "Read at publisher / Open in browser (O)");
-    open.connect_clicked(|_| open_original());
-    let export = widgets_button("document-save-symbolic", "Export note");
-    export.connect_clicked(|_| export_note());
-
-    toolbar.append(&save);
-    toolbar.append(&copy);
     toolbar.append(&font_toggle);
-    toolbar.append(&open);
-    toolbar.append(&export);
+
+    let more = widgets::bar_button("view-more-horizontal-symbolic", "More: brief, compare sources, read aloud, export as a note");
+    more.connect_clicked(|button| nyx_ui::menu::popup_below(button, more_entries()));
+    toolbar.append(&more);
 
     root.append(&toolbar);
 
-    let pane = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    let pane = gtk::Box::new(gtk::Orientation::Vertical, 12);
     pane.add_css_class("reader");
     pane.set_hexpand(true);
-    pane.set_margin_start(28);
-    pane.set_margin_end(28);
-    pane.set_margin_top(20);
-    pane.set_margin_bottom(64);
 
-    let cover = gtk::Picture::new();
-    cover.set_content_fit(gtk::ContentFit::Cover);
-    cover.set_can_shrink(true);
-    cover.set_height_request(280);
-    cover.add_css_class("reader-cover");
-
-    let cover_wrap = gtk::Overlay::new();
-    cover_wrap.set_child(Some(&cover));
-    cover_wrap.set_measure_overlay(&cover, false);
-    cover_wrap.set_visible(false);
-
-    let kicker = gtk::Label::new(None);
-    kicker.add_css_class("reader-kicker");
-    kicker.set_xalign(0.0);
-    kicker.set_visible(false);
+    let kicker = gtk::Box::new(gtk::Orientation::Horizontal, 0);
 
     let title = gtk::Label::new(None);
     title.add_css_class("reader-title");
@@ -139,32 +133,42 @@ pub fn build() -> gtk::Box {
     title.set_wrap(true);
     title.set_wrap_mode(gtk::pango::WrapMode::Word);
 
-    let meta = gtk::Label::new(None);
+    let meta = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     meta.add_css_class("reader-meta");
-    meta.set_xalign(0.0);
-    meta.set_wrap(true);
 
-    let progress = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    progress.add_css_class("reader-brief-card");
-    progress.set_visible(false);
-    let progress_text = gtk::Label::new(Some("Writing a summary…"));
-    progress_text.set_xalign(0.0);
-    progress_text.set_hexpand(true);
-    let cancel = widgets_button("window-close-symbolic", "Cancel");
+    let brief_card = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    brief_card.add_css_class("in-short");
+    let brief_icon = gtk::Image::from_icon_name("nyx-news-sparkle-symbolic");
+    brief_icon.add_css_class("in-short-icon");
+    brief_icon.set_valign(gtk::Align::Start);
+    brief_card.append(&brief_icon);
+    let brief_column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    brief_column.set_hexpand(true);
+    let brief_head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let brief_title = widgets::label("In short", "in-short-title");
+    brief_title.set_hexpand(true);
+    brief_head.append(&brief_title);
+    let cancel = widgets::bar_button("window-close-symbolic", "Stop");
+    cancel.add_css_class("in-short-cancel");
     cancel.connect_clicked(|_| cancel_brief());
-    progress.append(&progress_text);
-    progress.append(&cancel);
-
-    let brief_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    brief_card.add_css_class("reader-brief-card");
-    let brief_title = widgets::label("AI INTELLIGENCE", "reader-brief-title");
-    let brief_body = gtk::Label::new(None);
-    brief_body.add_css_class("reader-brief-body");
-    brief_body.set_xalign(0.0);
-    brief_body.set_wrap(true);
-    brief_card.append(&brief_title);
-    brief_card.append(&brief_body);
+    brief_head.append(&cancel);
+    brief_column.append(&brief_head);
+    let brief_body = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    brief_column.append(&brief_body);
+    brief_card.append(&brief_column);
     brief_card.set_visible(false);
+
+    let cover = gtk::Picture::new();
+    cover.set_content_fit(gtk::ContentFit::Cover);
+    cover.set_can_shrink(true);
+    cover.set_height_request(280);
+    cover.add_css_class("reader-cover");
+    let cover_wrap = gtk::Overlay::new();
+    cover_wrap.set_child(Some(&cover));
+    cover_wrap.set_measure_overlay(&cover, false);
+    cover_wrap.set_overflow(gtk::Overflow::Hidden);
+    cover_wrap.add_css_class("reader-cover-frame");
+    cover_wrap.set_visible(false);
 
     let body = gtk::Label::new(None);
     body.add_css_class("reader-body");
@@ -174,34 +178,31 @@ pub fn build() -> gtk::Box {
     body.set_wrap(true);
     body.set_wrap_mode(gtk::pango::WrapMode::Word);
 
-    pane.append(&cover_wrap);
     pane.append(&kicker);
     pane.append(&title);
     pane.append(&meta);
-    pane.append(&progress);
     pane.append(&brief_card);
+    pane.append(&cover_wrap);
     pane.append(&body);
 
     let pub_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
     pub_box.add_css_class("publisher-box");
     pub_box.set_visible(false);
-
-    let pub_notice = gtk::Label::new(Some("Full article could not be formatted for the reader. Read the original article at the publisher in your browser."));
+    let pub_notice = gtk::Label::new(Some("This story couldn't be laid out for reading here. The whole story is at the publisher."));
     pub_notice.add_css_class("publisher-notice");
     pub_notice.set_xalign(0.0);
     pub_notice.set_wrap(true);
     pub_box.append(&pub_notice);
-
-    let pub_btn = gtk::Button::with_label("Read full story at publisher ↗");
-    pub_btn.add_css_class("publisher-btn");
+    let (pub_btn, _) = labeled("nyx-news-external-symbolic", "Read it at the publisher");
+    pub_btn.add_css_class("suggested-action");
     pub_btn.set_halign(gtk::Align::Start);
     pub_btn.connect_clicked(|_| open_original());
     pub_box.append(&pub_btn);
-
     pane.append(&pub_box);
 
+    let column = Clamp::new(&pane, 660);
     let scroll = gtk::ScrolledWindow::builder()
-        .child(&pane)
+        .child(&column)
         .hexpand(true)
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -254,18 +255,36 @@ pub fn build() -> gtk::Box {
     COVER_WRAP.with(|p| *p.borrow_mut() = Some(cover_wrap));
     META.with(|p| *p.borrow_mut() = Some(meta));
     BODY.with(|p| *p.borrow_mut() = Some(body));
-    BRIEF_BODY.with(|p| *p.borrow_mut() = Some(brief_body));
     BRIEF_CARD.with(|p| *p.borrow_mut() = Some(brief_card));
-    AI_ROW.with(|p| *p.borrow_mut() = Some(ai));
-    PROGRESS.with(|p| *p.borrow_mut() = Some(progress));
-    PROGRESS_TEXT.with(|p| *p.borrow_mut() = Some(progress_text));
-    SAVE.with(|p| *p.borrow_mut() = Some(save));
+    BRIEF_TITLE.with(|p| *p.borrow_mut() = Some(brief_title));
+    BRIEF_BODY.with(|p| *p.borrow_mut() = Some(brief_body));
+    BRIEF_CANCEL.with(|p| *p.borrow_mut() = Some(cancel));
+    BACK.with(|p| *p.borrow_mut() = Some(back_label));
+    OPEN.with(|p| *p.borrow_mut() = Some((open, open_label)));
+    SAVE.with(|p| *p.borrow_mut() = Some((save, save_label)));
     PUBLISHER_BOX.with(|p| *p.borrow_mut() = Some(pub_box));
     root
 }
 
-fn widgets_button(icon: &str, tooltip: &str) -> gtk::Button {
-    crate::widgets::bar_button(icon, tooltip)
+fn more_entries() -> Vec<nyx_ui::menu::Entry> {
+    use nyx_ui::menu::{item, separator};
+    let mut entries = Vec::new();
+    if prefs::get().summaries {
+        entries.push(item("Brief today's top stories", || start_brief("brief")).icon("nyx-news-sparkle-symbolic"));
+        entries.push(item("Compare sources", || start_brief("compare")).icon("view-dual-symbolic"));
+        entries.push(item("Read aloud", || start_brief("spoken")).icon("audio-volume-high-symbolic"));
+        entries.push(separator());
+    }
+    entries.push(item("Export as a note…", export_note).icon("document-save-symbolic"));
+    entries
+}
+
+/// A narrow window shows Open at the publisher as its icon only.
+pub fn set_narrow(narrow: bool) {
+    NARROW.with(|n| n.set(narrow));
+    if let Some((_, label)) = OPEN.with(|p| p.borrow().clone()) {
+        label.set_visible(!narrow);
+    }
 }
 
 pub fn show(article: &ArticleListItem) {
@@ -282,17 +301,23 @@ pub fn show(article: &ArticleListItem) {
             cover_wrap.set_visible(false);
         }
     }
+    let pub_name = source::name(&article.original_url, &article.feed_title);
     if let Some(kicker) = KICKER.with(|p| p.borrow().clone()) {
-        let pub_name = source::name(&article.original_url, &article.feed_title);
-        if !pub_name.is_empty() {
-            kicker.set_text(&pub_name.to_uppercase());
-            kicker.set_visible(true);
-        } else {
-            kicker.set_visible(false);
+        while let Some(child) = kicker.first_child() {
+            kicker.remove(&child);
         }
+        kicker.append(&look::kicker(article));
     }
     if let Some(title) = TITLE.with(|p| p.borrow().clone()) {
         title.set_text(if article.title.is_empty() { "Untitled" } else { &article.title });
+    }
+    if let Some(back) = BACK.with(|p| p.borrow().clone()) {
+        back.set_text(&if window::search_active() { "Search".to_string() } else { window::current_page_name() });
+    }
+    if let Some((open, label)) = OPEN.with(|p| p.borrow().clone()) {
+        label.set_text(&format!("Open at {pub_name}"));
+        label.set_visible(!NARROW.with(|n| n.get()));
+        open.set_tooltip_text(Some(&format!("Open at {pub_name} (O)")));
     }
     let cached = article
         .content_hash
@@ -300,20 +325,28 @@ pub fn show(article: &ArticleListItem) {
         .and_then(|hash| window::with_db(|db| Ok(db.body(&paths::content_cache(), hash))).ok().flatten());
     let saved = std::fs::read_to_string(paths::story_file(&article.id)).ok().filter(|text| text.len() >= 400);
     let ready = saved.or_else(|| cached.map(|html| html_text::plain(&html)).filter(|t| t.len() >= 400));
-    let feed_fallback = if !article.summary.trim().is_empty() {
-        Some(html_text::plain(&article.summary))
-    } else {
-        None
-    };
+    let feed_fallback = if !article.summary.trim().is_empty() { Some(html_text::plain(&article.summary)) } else { None };
     let initial_text = ready.clone().or_else(|| feed_fallback.clone()).unwrap_or_else(|| "Opening the story…".into());
     if let Some(meta) = META.with(|p| p.borrow().clone()) {
-        let byline = source::byline(&article.original_url, &article.feed_title, article.published_at);
-        let read_time = source::read_time(&initial_text);
-        let mut meta_line = format!("{byline} · {read_time}");
-        if ready.is_some() {
-            meta_line.push_str(" · Cached offline");
+        while let Some(child) = meta.first_child() {
+            meta.remove(&child);
         }
-        meta.set_text(&meta_line);
+        let author = article.author.trim();
+        let who = if author.is_empty() { pub_name.clone() } else { author.to_string() };
+        meta.append(&look::avatar(&who, 26));
+        let mut line = if author.is_empty() {
+            format!("<b>{}</b> · {}", gtk::glib::markup_escape_text(&pub_name), source::read_time(&initial_text))
+        } else {
+            format!("By <b>{}</b> · {}", gtk::glib::markup_escape_text(author), source::read_time(&initial_text))
+        };
+        if ready.is_some() {
+            line.push_str(" · Saved for offline reading");
+        }
+        let label = gtk::Label::new(None);
+        label.set_markup(&line);
+        label.set_xalign(0.0);
+        label.set_wrap(true);
+        meta.append(&label);
     }
     if let Some(body) = BODY.with(|p| p.borrow().clone()) {
         body.set_text(&initial_text);
@@ -333,6 +366,14 @@ pub fn show(article: &ArticleListItem) {
     }
     paint_actions();
     timeline::show_story();
+    if prefs::get().summaries {
+        let id = article.id.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+            if OPEN_ID.with(|p| p.borrow().as_deref() == Some(id.as_str())) && !RUNNING.get() {
+                start_brief("short");
+            }
+        });
+    }
 }
 
 pub fn replace_body(id: &str, text: &str) {
@@ -414,7 +455,7 @@ pub fn toggle_star() {
 
 pub fn toggle_save() {
     let Some(id) = window::selected_id() else { return };
-    let saved = window::find_article(&id).is_some_and(|a| a.saved);
+    let saved = window::find_article(&id).or_else(|| window::with_db(|db| db.article(&id)).ok().flatten()).is_some_and(|a| a.saved);
     let _ = window::with_db(|db| db.set_saved(&id, !saved));
     window::toast(if saved { "Story removed from Saved" } else { "Story saved" });
     window::reload();
@@ -423,24 +464,80 @@ pub fn toggle_save() {
 
 fn paint_actions() {
     let Some(id) = window::selected_id() else { return };
-    let Some(article) = window::find_article(&id) else { return };
-    if let Some(button) = SAVE.with(|p| p.borrow().clone()) {
-        button.set_icon_name(if article.saved { "user-bookmarks-symbolic" } else { "bookmark-new-symbolic" });
+    let Some(article) = window::find_article(&id).or_else(|| window::with_db(|db| db.article(&id)).ok().flatten()) else {
+        return;
+    };
+    if let Some((button, label)) = SAVE.with(|p| p.borrow().clone()) {
+        label.set_text(if article.saved { "Saved" } else { "Save" });
         button.set_tooltip_text(Some(if article.saved { "Remove from Saved (B)" } else { "Save story (B)" }));
         if article.saved {
-            button.add_css_class("active");
+            button.add_css_class("on");
         } else {
-            button.remove_css_class("active");
+            button.remove_css_class("on");
         }
     }
 }
 
 pub fn set_ai_visible(on: bool) {
-    if let Some(row) = AI_ROW.with(|p| p.borrow().clone()) {
-        row.set_visible(on);
-    }
     if !on {
         cancel_brief();
+        if let Some(card) = BRIEF_CARD.with(|p| p.borrow().clone()) {
+            card.set_visible(false);
+        }
+    }
+}
+
+fn card_title(task: &str) -> &'static str {
+    match task {
+        "brief" => "Today's top stories",
+        "compare" => "How the sources compare",
+        "spoken" => "Read aloud",
+        _ => "In short",
+    }
+}
+
+fn set_card(title: &str, text: &str, running: bool) {
+    if let Some(label) = BRIEF_TITLE.with(|p| p.borrow().clone()) {
+        label.set_text(title);
+    }
+    if let Some(cancel) = BRIEF_CANCEL.with(|p| p.borrow().clone()) {
+        cancel.set_visible(running);
+    }
+    let Some(body) = BRIEF_BODY.with(|p| p.borrow().clone()) else { return };
+    while let Some(child) = body.first_child() {
+        body.remove(&child);
+    }
+    if running {
+        body.append(&widgets::label(text, "in-short-status"));
+    } else {
+        let points = nyx_news_core::points(text);
+        let short = points.len() <= 5 && points.iter().all(|p| p.text.chars().count() < 220);
+        if short && !points.is_empty() {
+            for point in points {
+                let line = match point.label {
+                    Some(label) => format!("{label}: {}", point.text),
+                    None => point.text,
+                };
+                let row = widgets::label(&format!("•  {line}"), "in-short-line");
+                row.set_wrap(true);
+                row.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+                body.append(&row);
+            }
+        } else {
+            let all = widgets::label(text.trim(), "in-short-line");
+            all.set_wrap(true);
+            all.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            body.append(&all);
+        }
+    }
+    if let Some(card) = BRIEF_CARD.with(|p| p.borrow().clone()) {
+        card.set_visible(true);
+    }
+}
+
+fn hide_card() {
+    if let Some(card) = BRIEF_CARD.with(|p| p.borrow().clone()) {
+        card.set_visible(false);
     }
 }
 
@@ -448,20 +545,29 @@ pub fn apply_brief(generation: u64, result: Result<String, AiFailure>) {
     if generation != GENERATION.get() {
         return;
     }
-    hide_progress();
-    let article = BODY.with(|p| p.borrow().as_ref().map(|label| label.text().to_string())).unwrap_or_default();
-    let previous = current_brief();
-    let pane = finish(&article, previous.as_deref(), result);
-    if let Some(brief) = pane.brief.as_deref() {
-        if let Some(label) = BRIEF_BODY.with(|p| p.borrow().clone()) {
-            label.set_text(brief);
+    RUNNING.set(false);
+    let task = TASK.with(|t| t.borrow().clone());
+    match result {
+        Ok(text) if !text.trim().is_empty() => {
+            let title = card_title(&task).to_string();
+            set_card(&title, &text, false);
+            BRIEF_TEXT.with(|b| *b.borrow_mut() = Some((title, text)));
         }
-        if let Some(card) = BRIEF_CARD.with(|p| p.borrow().clone()) {
-            card.set_visible(true);
+        Ok(_) => restore_card(),
+        Err(err) => {
+            restore_card();
+            // A summary nobody asked for fails quietly; the story is still there.
+            if task != "short" {
+                window::toast(&err.message());
+            }
         }
     }
-    if let Some(message) = pane.toast {
-        window::toast(&message);
+}
+
+fn restore_card() {
+    match BRIEF_TEXT.with(|b| b.borrow().clone()) {
+        Some((title, text)) => set_card(&title, &text, false),
+        None => hide_card(),
     }
 }
 
@@ -470,11 +576,11 @@ fn start_brief(task: &str) {
         return;
     }
     let Some(id) = window::selected_id() else {
-        window::toast("Open an article first.");
+        window::toast("Open a story first.");
         return;
     };
-    let Some(current) = window::find_article(&id) else {
-        window::toast("Open an article first.");
+    let Some(current) = window::find_article(&id).or_else(|| window::with_db(|db| db.article(&id)).ok().flatten()) else {
+        window::toast("Open a story first.");
         return;
     };
     let list = window::articles();
@@ -488,35 +594,42 @@ fn start_brief(task: &str) {
         }
         "compare" => {
             let Some(other) = list.iter().find(|article| article.id != current.id).cloned() else {
-                window::toast("Two articles are needed to compare.");
+                window::toast("Comparing needs a second story.");
                 return;
             };
             vec![current, other]
         }
         _ => vec![current],
     };
-    let excerpts: Vec<Excerpt> = articles.iter().map(excerpt_of).collect();
+    let mut excerpts: Vec<Excerpt> = articles.iter().map(excerpt_of).collect();
+    if task == "short"
+        && let (Some(first), Some(body)) = (excerpts.first_mut(), BODY.with(|p| p.borrow().clone()))
+    {
+        let text = body.text().to_string();
+        if text.len() > first.text.len() {
+            first.text = text;
+        }
+    }
     let generation = bump_generation();
-    if let Some(label) = PROGRESS_TEXT.with(|p| p.borrow().clone()) {
-        label.set_text(match task {
-            "brief" => "Writing a brief…",
-            "compare" => "Comparing sources…",
-            "spoken" => "Writing a spoken brief…",
-            _ => "Writing a summary…",
-        });
-    }
-    if let Some(row) = PROGRESS.with(|p| p.borrow().clone()) {
-        row.set_visible(true);
-    }
+    TASK.with(|t| *t.borrow_mut() = task.to_string());
+    RUNNING.set(true);
+    let status = match task {
+        "brief" => "Writing a brief of today's top stories…",
+        "compare" => "Comparing sources…",
+        "spoken" => "Writing something to read aloud…",
+        _ => "Writing a short summary…",
+    };
+    set_card(card_title(task), status, true);
     worker::brief(task.to_string(), excerpts, generation);
 }
 
 fn cancel_brief() {
-    let was_running = PROGRESS.with(|p| p.borrow().as_ref().is_some_and(|row| row.is_visible()));
+    let was_running = RUNNING.get();
     bump_generation();
-    hide_progress();
+    RUNNING.set(false);
     if was_running {
         assistant_client::cancel();
+        restore_card();
     }
 }
 
@@ -528,29 +641,15 @@ fn bump_generation() -> u64 {
     })
 }
 
-fn hide_progress() {
-    if let Some(row) = PROGRESS.with(|p| p.borrow().clone()) {
-        row.set_visible(false);
-    }
-}
-
 fn clear_brief() {
-    let running = PROGRESS.with(|row| row.borrow().as_ref().is_some_and(|row| row.is_visible()));
+    let running = RUNNING.get();
     bump_generation();
-    hide_progress();
-    if let Some(label) = BRIEF_BODY.with(|p| p.borrow().clone()) {
-        label.set_text("");
-    }
-    if let Some(card) = BRIEF_CARD.with(|p| p.borrow().clone()) {
-        card.set_visible(false);
-    }
+    RUNNING.set(false);
+    BRIEF_TEXT.with(|b| *b.borrow_mut() = None);
+    hide_card();
     if running {
         assistant_client::cancel();
     }
-}
-
-fn current_brief() -> Option<String> {
-    BRIEF_BODY.with(|p| p.borrow().as_ref().map(|label| label.text().to_string())).filter(|text| !text.is_empty())
 }
 
 fn excerpt_of(article: &ArticleListItem) -> Excerpt {
@@ -565,11 +664,11 @@ fn excerpt_of(article: &ArticleListItem) -> Excerpt {
 
 fn export_note() {
     let Some(id) = window::selected_id() else {
-        window::toast("Open an article first.");
+        window::toast("Open a story first.");
         return;
     };
     let Some(article) = window::find_article(&id).or_else(|| window::with_db(|db| db.article(&id)).ok().flatten()) else {
-        window::toast("Open an article first.");
+        window::toast("Open a story first.");
         return;
     };
     let Some(parent) = window::window() else { return };

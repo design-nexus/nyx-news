@@ -50,6 +50,8 @@ pub fn prompt(task: &str, articles: &[Excerpt]) -> String {
         "brief" => "Write one brief that covers every article.\n",
         "compare" => "Compare these sources. Say where they agree and where they differ.\n",
         "spoken" => "Write a short script that can be read aloud.\n",
+        "daily" => "Write three lines, one for each of the first three stories. Start each line with a label of two or three words and a colon, then one sentence.\n",
+        "short" => "Summarize this article as three short points, one per line.\n",
         _ => "Summarize this article.\n",
     });
     for article in articles.iter().take(5) {
@@ -83,6 +85,45 @@ pub fn finish(article: &str, current_brief: Option<&str>, result: Result<String,
         Ok(brief) => Pane { article: article.to_string(), brief: Some(brief), toast: None },
         Err(err) => Pane { article: article.to_string(), brief: current_brief.map(str::to_string), toast: Some(err.message()) },
     }
+}
+
+/// One line of a brief, with its leading "Label:" kept apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Point {
+    pub label: Option<String>,
+    pub text: String,
+}
+
+/// A brief as short lines for the page: bullets, numbering, bold markers, links and
+/// source lines taken off.
+pub fn points(text: &str) -> Vec<Point> {
+    text.lines().filter_map(point).collect()
+}
+
+fn point(line: &str) -> Option<Point> {
+    let mut line = line.trim().trim_start_matches(['-', '*', '•', '·', '#']).trim_start();
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 && matches!(line[digits..].chars().next(), Some('.' | ')')) {
+        line = line[digits + 1..].trim_start();
+    }
+    let unmarked = line.replace("**", "").replace("__", "");
+    let words: Vec<&str> = unmarked
+        .split_whitespace()
+        .filter(|word| !word.trim_start_matches(['(', '[', '<']).starts_with("http"))
+        .collect();
+    let joined = words.join(" ").replace("()", "").replace("[]", "");
+    let text = joined.trim().trim_end_matches([' ', '-', '—', '(']);
+    let lower = text.to_lowercase();
+    if text.is_empty() || text.ends_with(':') || lower.starts_with("source") {
+        return None;
+    }
+    if let Some((head, rest)) = text.split_once(':') {
+        let head = head.trim();
+        if !rest.trim().is_empty() && head.split_whitespace().count() <= 4 && head.chars().count() <= 40 {
+            return Some(Point { label: Some(head.to_string()), text: rest.trim().to_string() });
+        }
+    }
+    Some(Point { label: None, text: text.to_string() })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +236,19 @@ mod tests {
         let mut client = Fake { mode: "text", prompt: RefCell::new(String::new()), spoke: RefCell::new(None) };
         let text = ask(&mut client, "spoken", &[story()]).unwrap();
         assert_eq!(client.spoke.borrow().as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn a_brief_becomes_labelled_lines_without_links() {
+        let text = "Here are today's stories:\n\n- **Ocean plastics:** 140 countries agree to halve packaging (https://example.com/a).\n2. Rates: the bank holds steady.\n• A reef nursery bred hardier coral.\nSource: https://example.com/c\nhttps://example.com/d";
+        assert_eq!(
+            points(text),
+            vec![
+                Point { label: Some("Ocean plastics".into()), text: "140 countries agree to halve packaging".into() },
+                Point { label: Some("Rates".into()), text: "the bank holds steady.".into() },
+                Point { label: None, text: "A reef nursery bred hardier coral.".into() },
+            ]
+        );
     }
 
     #[test]

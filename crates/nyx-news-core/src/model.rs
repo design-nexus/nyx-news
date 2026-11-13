@@ -82,6 +82,8 @@ pub enum View {
     Starred,
     Saved,
     Feed(String),
+    /// One publication's feeds, by id.
+    Feeds(Vec<String>),
     Folder(String),
     ForYou,
     Topic(String),

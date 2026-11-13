@@ -1,14 +1,12 @@
-/* News on Nyx 2.0: only News' own parts. One surface: the header, the sidebar, the
-   timeline and the reader share the window's background; cards and spacing, not
-   lines, separate them. The sidebar, buttons, inputs and dialogs come from the shared
-   sheets; headlines and the reader keep their serif. */
+/* News on Nyx 2.0: only News' own parts. The sidebar, buttons, inputs and dialogs come
+   from the shared sheets. The look follows nyx-design/mockups/revamp (News, option A,
+   as a front page). */
 
 /* ---------- Header ---------- */
 
-.header-status {
-  font-size: 11.5px;
-  color: @theme_dim_text;
-  font-feature-settings: "tnum";
+.key-hint {
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
 }
 
 window.news-window .app-header button.bar-button {
@@ -19,32 +17,137 @@ window.news-window .app-header button.bar-button {
   box-shadow: none;
 }
 
-/* The icon-only sidebar hides its group labels itself. The shared sheet's
-   font-size: 0 for them can stick after the sidebar expands again. */
+window.news-window .app-header button.new-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: @field;
+  box-shadow: inset 0 0 0 1px @hairline;
+  font-weight: 600;
+}
+
+window.news-window .app-header button.new-button:hover {
+  background: mix(@field, @theme_text, 0.06);
+}
+
+window.news-window .app-header button.new-button .key-hint {
+  margin-left: 2px;
+  font-weight: 400;
+}
+
+/* ---------- Sidebar ---------- */
+
+.settings-navigation:not(.compact) {
+  min-width: 228px;
+}
+
 .settings-navigation .nav-group,
 .settings-navigation.compact .nav-group {
   font-size: 11px;
 }
 
-/* ---------- Page toolbar ---------- */
-
-/* The page's own row sits on the window, with none of the GTK theme's toolbar fill. */
-.news-window .toolbar {
-  min-height: 44px;
-  padding: 0 16px 0 20px;
-  background: transparent;
-  border: none;
-  box-shadow: none;
+window.news-window .settings-navigation .nav-group-row button.nav-group-add {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0;
+  margin: 0 4px 2px 0;
+  color: @theme_text_tertiary;
 }
 
-.toolbar-title {
+/* The icon rail's mark where a group starts: a short bar in its colour. */
+.settings-navigation separator.nav-divider {
+  margin: 8px 14px 6px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: @theme_divider;
+}
+
+.settings-navigation .nav-badge {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: alpha(@theme_accent, 0.18);
+  color: @theme_accent;
+  font-size: 0.846em;
+  font-weight: 600;
+}
+
+.settings-navigation button.nav-more {
+  color: @theme_text_tertiary;
+}
+
+.topic-dot {
+  min-width: 9px;
+  min-height: 9px;
+  margin: 0 3px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.nav-foot {
+  padding: 10px 4px 4px 10px;
+}
+
+.nav-foot .status-readout {
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
+}
+
+.nav-foot .status-icon {
+  -gtk-icon-size: 13px;
+  color: @theme_text_tertiary;
+}
+
+.nav-foot .status-icon.ok { color: @theme_success; }
+.nav-foot .status-icon.warn { color: @theme_warning; }
+
+/* ---------- Page bar ---------- */
+
+.page-bar {
+  min-height: 50px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid @sheet_line;
+}
+
+.page-title {
+  font-size: 1.077em;
   font-weight: 600;
   color: @theme_text;
 }
 
-.toolbar-meta {
-  font-size: 12px;
-  color: @theme_dim_text;
+.page-sub {
+  color: @theme_text_tertiary;
+}
+
+.page-bar .segmented button.segment {
+  padding: 0 12px;
+}
+
+window.news-window button.follow-button {
+  min-height: 30px;
+  padding: 0 12px;
+  font-weight: 600;
+}
+
+window.news-window button.follow-button.following {
+  background: alpha(@theme_accent, 0.12);
+  color: @theme_accent;
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.3);
+}
+
+/* ---------- Kickers ---------- */
+
+.kicker {
+  font-size: 0.846em;
+}
+
+.kicker-topic {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.kicker-source {
+  color: @theme_text_tertiary;
 }
 
 /* ---------- Story list ---------- */
@@ -55,7 +158,7 @@ window.news-window .app-header button.bar-button {
 }
 
 .article-row.compact {
-  padding: 7px 16px;
+  padding: 8px 16px;
 }
 
 .unread-dot {
@@ -86,18 +189,7 @@ window.news-window .app-header button.bar-button {
 
 .article-excerpt {
   color: @theme_dim_text;
-  font-size: 12.5px;
-}
-
-.article-meta {
-  color: @theme_dim_text;
-  font-size: 12px;
-}
-
-.article-source {
-  color: @theme_accent;
-  font-weight: 600;
-  font-size: 12px;
+  font-size: 0.923em;
 }
 
 listview {
@@ -121,57 +213,89 @@ listview > row:selected {
 
 /* ---------- Reader ---------- */
 
+.reader-bar {
+  padding: 0 10px;
+}
+
+window.news-window button.reader-back {
+  padding: 0 10px 0 6px;
+  color: @theme_dim_text;
+}
+
+window.news-window button.reader-back:hover {
+  color: @theme_text;
+}
+
+window.news-window button.save-toggle.on {
+  background: @nav_active;
+  color: @theme_accent;
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.3);
+}
+
 .reader {
-  padding: 0;
+  padding: 24px 28px 64px;
   background: transparent;
 }
 
-.reader-cover {
+.reader-cover-frame {
   border-radius: var(--nyx-radius-card);
 }
 
-.reader-kicker {
-  color: @theme_accent;
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .reader-title {
-  font-family: "Noto Serif", "Liberation Serif", serif;
-  font-size: 26px;
+  font-size: 1.923em;
   font-weight: 600;
-  line-height: 1.25;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
   color: @theme_text;
 }
 
 .reader-meta {
   color: @theme_dim_text;
-  font-size: 12.5px;
+  font-size: 0.923em;
 }
 
-/* The summary from Assistant: a card tinted in the accent. */
-.reader-brief-card {
-  padding: 14px 18px;
-  border-radius: var(--nyx-radius-card);
-  background: alpha(@theme_accent, 0.09);
-}
-
-.reader-brief-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  color: @theme_accent;
-}
-
-.reader-brief-body {
-  font-size: 13px;
+.reader-meta b {
   color: @theme_text;
+}
+
+/* "In short" and what Assistant writes from the menu: a card tinted in the accent. */
+.in-short {
+  padding: 10px 14px;
+  border-radius: var(--nyx-radius-card);
+  background: mix(@theme_card, @theme_accent, 0.08);
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.18);
+}
+
+.in-short-icon {
+  color: @theme_accent;
+  margin-top: 1px;
+}
+
+.in-short-title {
+  font-weight: 600;
+  color: @theme_text;
+}
+
+.in-short-line {
+  color: @theme_dim_text;
+  line-height: 1.5;
+}
+
+.in-short-status {
+  color: @theme_dim_text;
+  font-style: italic;
+}
+
+window.news-window button.in-short-cancel {
+  min-width: 22px;
+  min-height: 22px;
 }
 
 .reader-body {
   font-family: "Noto Serif", "Liberation Serif", serif;
   font-size: 1.1em;
   font-weight: 400;
+  line-height: 1.5;
   color: @theme_text;
   background: transparent;
   outline: none;
@@ -216,13 +340,100 @@ listview > row:selected {
   font-size: 1.28em;
 }
 
-.reader-footer {
-  margin-top: 24px;
+.pub-avatar {
+  border-radius: 999px;
+  background: currentColor;
 }
 
-window.news-window button.active {
-  color: @theme_accent;
-  background: @nav_active;
+.pub-avatar .pub-initials {
+  color: white;
+  font-size: 0.77em;
+  font-weight: 700;
+}
+
+.publisher-box {
+  margin-top: 24px;
+  padding: 16px 20px;
+  border-radius: var(--nyx-radius-card);
+  background: @theme_card;
+}
+
+.publisher-notice {
+  color: @theme_dim_text;
+}
+
+/* ---------- Channels and topics ---------- */
+
+.channels {
+  padding: 18px 20px 32px;
+}
+
+.channels > .shelf-title {
+  margin-top: 8px;
+}
+
+.channels > .shelf-title:first-child {
+  margin-top: 0;
+}
+
+window.news-window button.topic-card {
+  padding: 10px 12px;
+  border-radius: var(--nyx-radius-card);
+  background: @theme_card;
+  box-shadow: inset 0 0 0 1px @hairline;
+  font-weight: 400;
+}
+
+window.news-window button.topic-card:hover {
+  background: mix(@theme_card, @theme_text, 0.04);
+}
+
+.topic-badge {
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 999px;
+  background: @theme_raised;
+}
+
+.topic-card.on .topic-badge {
+  background: currentColor;
+}
+
+.topic-card.on .topic-badge image {
+  color: white;
+}
+
+.topic-name {
+  font-weight: 600;
+  color: @theme_text;
+}
+
+.topic-following,
+.topic-follow {
+  font-size: 0.846em;
+  font-weight: 600;
+}
+
+.topic-following { color: @theme_success; }
+.topic-follow { color: @theme_accent; }
+
+.topic-following image,
+.topic-follow image {
+  -gtk-icon-size: 12px;
+}
+
+.publications .publication {
+  min-height: 50px;
+}
+
+.channels-note {
+  margin-top: 4px;
+  color: @theme_text_tertiary;
+  font-size: 0.923em;
+}
+
+.channels-note image {
+  -gtk-icon-size: 14px;
 }
 
 .empty-hint {

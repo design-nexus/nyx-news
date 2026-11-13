@@ -6,6 +6,7 @@ mod control;
 mod dialogs;
 mod discover_page;
 mod html_text;
+mod look;
 mod note;
 mod paths;
 mod prefs;

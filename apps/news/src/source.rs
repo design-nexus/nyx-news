@@ -107,12 +107,58 @@ pub fn read_time(text: &str) -> String {
     format!("{mins} min read")
 }
 
-pub fn masthead_date() -> String {
+/// Today, as the front page names it ("Thursday 12 November").
+pub fn today() -> String {
     glib::DateTime::now_local()
         .ok()
-        .and_then(|d| d.format("%A, %B %-e").ok())
-        .map(|s| s.to_string().to_uppercase())
-        .unwrap_or_else(|| "TODAY'S EDITION".to_string())
+        .and_then(|d| d.format("%A %-e %B").ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Today".to_string())
+}
+
+pub fn now() -> i64 {
+    glib::DateTime::now_local().ok().map(|d| d.to_unix()).unwrap_or(0)
+}
+
+/// When the last refresh came in ("Updated 4 min ago").
+pub fn updated(at: i64) -> String {
+    let diff = now().saturating_sub(at);
+    if diff < 60 {
+        "Updated just now".into()
+    } else if diff < 3600 {
+        format!("Updated {} min ago", diff / 60)
+    } else if diff < 86400 {
+        format!("Updated {} h ago", diff / 3600)
+    } else {
+        format!("Updated {}", when(Some(at)).to_lowercase())
+    }
+}
+
+/// The feeds you follow, gathered by publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Publication {
+    pub name: String,
+    pub feeds: Vec<String>,
+    /// Unread stories from the last day.
+    pub unread: i64,
+}
+
+/// Publications with the most unread stories first.
+pub fn publications(feeds: &[nyx_news_core::FeedRow], recent: &std::collections::HashMap<String, i64>) -> Vec<Publication> {
+    let mut out: Vec<Publication> = Vec::new();
+    for feed in feeds {
+        let name = name(&feed.url, &feed.title);
+        let unread = recent.get(&feed.id).copied().unwrap_or(0);
+        match out.iter_mut().find(|p| p.name == name) {
+            Some(publication) => {
+                publication.feeds.push(feed.id.clone());
+                publication.unread += unread;
+            }
+            None => out.push(Publication { name, feeds: vec![feed.id.clone()], unread }),
+        }
+    }
+    out.sort_by(|a, b| b.unread.cmp(&a.unread).then_with(|| a.name.cmp(&b.name)));
+    out
 }
 
 #[cfg(test)]
@@ -124,5 +170,32 @@ mod tests {
         assert_eq!(name("https://www.nytimes.com/2026/10/18/world/story.html", "NYT > World News"), "The New York Times");
         assert_eq!(name("https://www.bbc.co.uk/news/articles/abc", "BBC News"), "BBC");
         assert_eq!(name("https://www.theguardian.com/world/story", "World news | The Guardian"), "The Guardian");
+    }
+
+    #[test]
+    fn feeds_gather_by_publication() {
+        let feed = |id: &str, url: &str| nyx_news_core::FeedRow {
+            id: id.into(),
+            url: url.into(),
+            title: String::new(),
+            site_url: String::new(),
+            folder_id: None,
+            position: 0,
+            poll_minutes: 60,
+            last_ok_at: None,
+            last_error: None,
+            consecutive_failures: 0,
+            disabled: false,
+            unread: 0,
+        };
+        let feeds = [
+            feed("a", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+            feed("b", "https://www.wired.com/feed/rss"),
+            feed("c", "https://feeds.bbci.co.uk/news/politics/rss.xml"),
+        ];
+        let recent = [("b".to_string(), 2), ("c".to_string(), 3)].into_iter().collect();
+        let list = publications(&feeds, &recent);
+        assert_eq!(list[0], Publication { name: "BBC".into(), feeds: vec!["a".into(), "c".into()], unread: 3 });
+        assert_eq!(list[1].name, "Wired");
     }
 }

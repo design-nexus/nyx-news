@@ -507,6 +507,13 @@ impl Db {
                 sql.push_str(" AND a.feed_id = ?");
                 values.push(Box::new(id.clone()));
             }
+            View::Feeds(ids) if ids.is_empty() => sql.push_str(" AND 0"),
+            View::Feeds(ids) => {
+                sql.push_str(&format!(" AND a.feed_id IN ({})", vec!["?"; ids.len()].join(", ")));
+                for id in ids {
+                    values.push(Box::new(id.clone()));
+                }
+            }
             View::Folder(id) => {
                 sql.push_str(" AND f.folder_id = ?");
                 values.push(Box::new(id.clone()));
@@ -637,6 +644,19 @@ impl Db {
             [],
             |r| r.get(0),
         )?)
+    }
+
+    /// Unread stories published since `since` (seconds), by feed id.
+    pub fn unread_since(&self, since: i64) -> Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.feed_id, COUNT(*) FROM articles a
+             JOIN feeds f ON f.id = a.feed_id AND f.deleted_at IS NULL
+             LEFT JOIN article_state s ON s.article_id = a.id
+             WHERE s.read_at IS NULL AND COALESCE(s.archived, 0) = 0 AND COALESCE(a.published_at, 0) >= ?1
+             GROUP BY a.feed_id",
+        )?;
+        let rows = stmt.query_map(params![since], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn counts(&self) -> Result<(i64, i64, i64)> {
@@ -1200,6 +1220,32 @@ mod tests {
         assert_eq!(again.title, "Rust release 2");
         assert!(again.read);
         assert_eq!(db.articles(&View::All, "", 10, 0).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_publication_shows_its_feeds_and_counts_recent_unread() {
+        let (mut db, dir) = db();
+        let feed = |db: &mut Db, url: &str| {
+            db.insert_feed(&NewFeed { url: url.into(), title: "Example".into(), site_url: String::new(), folder_id: None })
+                .unwrap()
+        };
+        let one = feed(&mut db, "https://example.com/one");
+        let two = feed(&mut db, "https://example.com/two");
+        let other = feed(&mut db, "https://other.example/feed");
+        for id in [&one, &two, &other] {
+            db.apply_feed(id, &parse_feed(RSS.as_bytes()).unwrap(), &Ingest::default_ingest()).unwrap();
+        }
+        let both = db.articles(&View::Feeds(vec![one.clone(), two.clone()]), "", 10, 0).unwrap();
+        assert_eq!(both.len(), 2);
+        assert!(both.iter().all(|a| a.feed_id == one || a.feed_id == two));
+        assert!(db.articles(&View::Feeds(Vec::new()), "", 10, 0).unwrap().is_empty());
+
+        let published = both[0].published_at.unwrap();
+        db.set_read(&both[0].id, true).unwrap();
+        let recent = db.unread_since(published).unwrap();
+        assert_eq!(recent.values().sum::<i64>(), 2);
+        assert!(db.unread_since(published + 1).unwrap().is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 

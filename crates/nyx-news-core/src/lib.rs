@@ -17,7 +17,7 @@ mod search;
 mod store;
 mod sync;
 
-pub use ai::{AiFailure, Assistant, Excerpt, Pane, Step, ask, finish, interpret, prompt};
+pub use ai::{AiFailure, Assistant, Excerpt, Pane, Point, Step, ask, finish, interpret, points, prompt};
 pub use cluster::{Signal, same_story, score, title_key, tokens};
 pub use discover::{DirectorySource, DiscoveredFeed, directory, directory_sources, discover_in_html};
 pub use fetch::{FetchBody, FetchOpts, FetchResult, get, ip_allowed, validate_resolved, validate_url};

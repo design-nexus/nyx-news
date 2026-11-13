@@ -1,13 +1,15 @@
-//! The News window: the header (the app and the page, the sidebar toggle; the search in
-//! the middle; the story count, Refresh and Settings at the end) over the sidebar and the
-//! pages. The sidebar does not grow, and it collapses to icons under 980 px or when the
-//! user collapses it.
+//! The News window: the header (the app and the sidebar toggle; the search in the
+//! middle; Follow and Settings at the end) over the sidebar and the pages. The sidebar
+//! groups Today, your topics and the publications you follow; it collapses to an icon
+//! rail under 980 px or when the user collapses it.
 
 use crate::dialogs;
+use crate::look;
 use crate::paths;
 use crate::prefs;
 use crate::reader;
 use crate::settings_dialog;
+use crate::source;
 use crate::timeline;
 use crate::widgets;
 use crate::worker;
@@ -21,20 +23,24 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub const SHORTCUTS: &[(&[&str], &str)] = &[
-    (&["Ctrl", "F"], "Search news"),
+    (&["Ctrl", "F"], "Search stories"),
     (&["/"], "Quick search filter"),
+    (&["Ctrl", "N"], "Follow a feed"),
     (&["J"], "Next story"),
     (&["K"], "Previous story"),
     (&["Enter"], "Read story"),
     (&["B"], "Save story (Bookmark)"),
-    (&["O"], "Open in browser"),
+    (&["O"], "Open at the publisher"),
     (&["R"], "Refresh news"),
-    (&["Esc"], "Back to Top Stories or clear search"),
+    (&["Esc"], "Back to the stories or clear search"),
     (&["Ctrl", "B"], "Collapse or expand sidebar"),
     (&["Ctrl", ","], "Settings"),
     (&["F1"], "Show keyboard shortcuts"),
     (&["Ctrl", "Q"], "Close"),
 ];
+
+/// Publications the Following group shows before "All publications".
+const FOLLOWING_SHOWN: usize = 6;
 
 struct Ui {
     window: gtk::ApplicationWindow,
@@ -42,7 +48,6 @@ struct Ui {
     nav: gtk::Box,
     nav_list: gtk::Box,
     search: gtk::SearchEntry,
-    header: chrome::AppHeader,
     view: View,
     articles: Vec<ArticleListItem>,
     selected: Option<String>,
@@ -52,6 +57,7 @@ thread_local! {
     static UI: RefCell<Option<Rc<RefCell<Ui>>>> = const { RefCell::new(None) };
     static NARROW: Cell<bool> = const { Cell::new(false) };
     static TOAST: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
+    static ALL_PUBLICATIONS: Cell<bool> = const { Cell::new(false) };
 }
 
 pub fn is_narrow() -> bool {
@@ -115,7 +121,14 @@ pub fn present(app: &gtk::Application, section: Option<&str>) {
         }
         Some(other) => navigate(&view_from_section(other)),
     }
-}
+    // Developer aid: a test copy on a virtual monitor opens the page's first story.
+    if std::env::var_os("NYX_NEWS_TEST_OPEN").is_some() {
+        glib::timeout_add_local_once(std::time::Duration::from_secs(3), || {
+            if let Some(article) = articles().into_iter().next() {
+                reader::show(&article);
+            }
+        });
+    }}
 
 fn view_from_section(section: &str) -> View {
     match section {
@@ -125,6 +138,12 @@ fn view_from_section(section: &str) -> View {
         "foryou" if prefs::get().recommendations => View::ForYou,
         "discover" => View::All,
         id if id.starts_with("feed:") => View::Feed(id.trim_start_matches("feed:").into()),
+        id if id.starts_with("feeds:") => {
+            let wanted: Vec<String> = id.trim_start_matches("feeds:").split(',').map(str::to_string).collect();
+            let have = with_db(|db| db.feeds()).unwrap_or_default();
+            let ids: Vec<String> = wanted.into_iter().filter(|id| have.iter().any(|f| f.id == *id)).collect();
+            if ids.is_empty() { View::All } else { View::Feeds(ids) }
+        }
         id if id.starts_with("folder:") => View::Folder(id.trim_start_matches("folder:").into()),
         id if id.starts_with("topic:") => View::Topic(id.trim_start_matches("topic:").into()),
         _ => View::All,
@@ -138,6 +157,7 @@ fn section_id(view: &View) -> String {
         View::Starred => "starred".into(),
         View::Saved => "saved".into(),
         View::Feed(id) => format!("feed:{id}"),
+        View::Feeds(ids) => format!("feeds:{}", ids.join(",")),
         View::Folder(id) => format!("folder:{id}"),
         View::ForYou => "foryou".into(),
         View::Topic(id) => format!("topic:{id}"),
@@ -146,19 +166,25 @@ fn section_id(view: &View) -> String {
 
 fn page_name(view: &View) -> String {
     match view {
-        View::All => "Top Stories".into(),
-        View::Unread => "Recent Stories".into(),
+        View::All => "Top stories".into(),
+        View::Unread => "Recent stories".into(),
         View::Starred => "Starred".into(),
         View::Saved => "Saved".into(),
         View::Feed(id) => feed_title(id),
+        View::Feeds(ids) => ids.first().map(|id| publication_name(id)).unwrap_or_else(|| "Publication".into()),
         View::Folder(id) => folder_name(id),
-        View::ForYou => "For You".into(),
+        View::ForYou => "For you".into(),
         View::Topic(id) => topic_name(id),
     }
 }
 
 fn feed_title(id: &str) -> String {
     with_db(|db| Ok(db.feed(id)?.map(|f| f.title).unwrap_or_else(|| "Feed".into()))).unwrap_or_else(|_| "Feed".into())
+}
+
+fn publication_name(feed_id: &str) -> String {
+    with_db(|db| Ok(db.feed(feed_id)?.map(|f| source::name(&f.url, &f.title)).unwrap_or_else(|| "Publication".into())))
+        .unwrap_or_else(|_| "Publication".into())
 }
 
 fn topic_name(id: &str) -> String {
@@ -182,27 +208,29 @@ pub fn navigate(view: &View) {
     let Some(ui) = ui() else { return };
     ui.borrow_mut().view = view.clone();
     prefs::update(|p| p.last_section = section_id(view));
-    let name = page_name(view);
-    chrome::set_title(&ui.borrow().window, "News", &name);
-    ui.borrow().header.set_subtitle(&name);
+    chrome::set_title(&ui.borrow().window, "News", &current_page_name());
     timeline::show_list();
     reader::hide();
     reload();
-    rebuild_nav();
+}
+
+/// Opens one of the front page's topics (World, Science…).
+pub fn open_topic(name: &str) {
+    timeline::show_section(name);
+    navigate(&View::All);
+    worker::open_section(name.to_string());
 }
 
 pub fn show_discover() {
     timeline::show_discover();
     reader::hide();
     let ui = ui().unwrap();
-    chrome::set_title(&ui.borrow().window, "News", "Discover");
-    ui.borrow().header.set_subtitle("Channels & Topics");
+    chrome::set_title(&ui.borrow().window, "News", "Channels and topics");
     rebuild_nav();
 }
 
 pub fn refresh_lists() {
     reload();
-    rebuild_nav();
 }
 
 pub fn apply_synced_prefs(fields: std::collections::BTreeMap<String, String>) {
@@ -261,7 +289,7 @@ pub fn search_query() -> String {
 }
 
 pub fn current_page_name() -> String {
-    let Some(ui) = ui() else { return "Top Stories".into() };
+    let Some(ui) = ui() else { return "Top stories".into() };
     let v = ui.borrow().view.clone();
     if v == View::All {
         let s = timeline::section();
@@ -276,6 +304,7 @@ pub fn reload() {
     let Some(ui) = ui() else { return };
     let view = ui.borrow().view.clone();
     let query = ui.borrow().search.text().to_string();
+    look::learn_topics();
     let loaded = with_db(|db| {
         db.set_poll_minutes(prefs::get().poll_minutes)?;
         match &view {
@@ -303,6 +332,7 @@ pub fn reload() {
         }
         Err(err) => toast(&err.to_string()),
     }
+    rebuild_nav();
 }
 
 pub fn selected_id() -> Option<String> {
@@ -330,43 +360,62 @@ pub fn move_selection(delta: i32) {
     reader::show(&articles[next]);
 }
 
-fn section_icon(name: &str) -> &'static str {
-    match name {
-        "World" => "web-browser-symbolic",
-        "National" => "emoji-flags-symbolic",
-        "Politics" => "system-users-symbolic",
-        "Business" => "x-office-spreadsheet-symbolic",
-        "Technology" => "computer-symbolic",
-        "Science" => "applications-science-symbolic",
-        "Health" => "face-smile-symbolic",
-        "Sports" => "applications-games-symbolic",
-        "Culture" => "applications-graphics-symbolic",
-        _ => "view-list-symbolic",
-    }
+/// What a sidebar row shows after its name.
+enum End {
+    None,
+    Count(i64),
+    Badge(i64),
 }
 
-fn nav_button(icon: &str, title: &str, tooltip: &str) -> (gtk::Button, gtk::Label) {
-    nav_button_with_badge(icon, title, tooltip, 0)
-}
-
-fn nav_button_with_badge(icon: &str, title: &str, tooltip: &str, count: i64) -> (gtk::Button, gtk::Label) {
+fn nav_row(lead: &impl IsA<gtk::Widget>, title: &str, tooltip: &str, end: End, active: bool) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("nav-item");
+    if active {
+        button.add_css_class("active");
+    }
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    content.append(&gtk::Image::from_icon_name(icon));
+    content.append(lead);
     let label = widgets::label(title, "nav-label");
     label.set_hexpand(true);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label.add_css_class("compact-hide");
     content.append(&label);
-    if count > 0 {
-        let badge = widgets::label(&count.to_string(), "nav-readout");
-        badge.add_css_class("compact-hide");
-        content.append(&badge);
+    let readout = match end {
+        End::Count(n) if n > 0 => Some(widgets::label(&n.to_string(), "nav-readout")),
+        End::Badge(n) if n > 0 => Some(widgets::label(&n.to_string(), "nav-badge")),
+        _ => None,
+    };
+    if let Some(readout) = readout {
+        readout.add_css_class("compact-hide");
+        readout.set_valign(gtk::Align::Center);
+        content.append(&readout);
     }
     button.set_child(Some(&content));
     button.set_tooltip_text(Some(tooltip));
-    (button, label)
+    button.update_property(&[gtk::accessible::Property::Label(title)]);
+    button
+}
+
+fn icon(name: &str) -> gtk::Image {
+    let image = gtk::Image::from_icon_name(name);
+    image.add_css_class("nav-icon");
+    image
+}
+
+/// A group's heading in its section's colour, and the icon rail's bar in the same colour.
+fn nav_group(list: &gtk::Box, title: &str, section: &str, first: bool, add: Option<(&str, fn())>) {
+    let bar = gtk::Separator::new(gtk::Orientation::Horizontal);
+    bar.add_css_class("nav-divider");
+    bar.add_css_class("compact-show");
+    bar.add_css_class(&format!("section-{section}"));
+    bar.set_visible(false);
+    list.append(&bar);
+    let row = match add {
+        Some((tip, run)) => nyx_ui::sidebar::group_label_with_add(title, first, tip, run),
+        None => nyx_ui::sidebar::group_label(title, first),
+    };
+    nyx_ui::sidebar::set_section(&row, section);
+    list.append(&row);
 }
 
 fn rebuild_nav() {
@@ -378,83 +427,116 @@ fn rebuild_nav() {
     let current = section_id(&ui.borrow().view);
     let discover_open = timeline::discover_visible();
     let open_section = timeline::section();
+    let on = |id: &str| !discover_open && current == id;
 
-    let group = widgets::label("TODAY", "nav-group");
-    group.add_css_class("compact-hide");
-    group.add_css_class("first");
-    // The first group in the app's accent, the others from the theme's [sections.news].
-    nyx_ui::sidebar::set_section(&group, nyx_ui::sidebar::ACCENT_SECTION);
-    list.append(&group);
+    let feeds = with_db(|db| db.feeds()).unwrap_or_default();
+    let recent = with_db(|db| db.unread_since(source::now() - 24 * 60 * 60)).unwrap_or_default();
+    let (_, _, saved_count) = with_db(|db| db.counts()).unwrap_or((0, 0, 0));
 
-    let (headlines, _) = nav_button("view-list-symbolic", "Top Stories", "Today's top news");
-    if !discover_open && current == "all" && open_section.is_empty() {
-        headlines.add_css_class("active");
-    }
-    headlines.connect_clicked(|_| {
+    nav_group(&list, "Today", nyx_ui::sidebar::ACCENT_SECTION, true, None);
+    let top = nav_row(
+        &icon("nyx-news-newspaper-symbolic"),
+        "Top stories",
+        "Today's front page",
+        End::Count(timeline::front_count() as i64),
+        on("all") && open_section.is_empty(),
+    );
+    top.connect_clicked(|_| {
         timeline::show_section("");
         navigate(&View::All);
     });
-    list.append(&headlines);
-
-    let (for_you, _) = nav_button("starred-symbolic", "For You", "Stories recommended for you");
-    if !discover_open && current == "foryou" {
-        for_you.add_css_class("active");
-    }
+    list.append(&top);
+    let for_you = nav_row(&icon("non-starred-symbolic"), "For you", "Stories picked from what you read", End::None, on("foryou"));
     for_you.connect_clicked(|_| navigate(&View::ForYou));
     list.append(&for_you);
-
-    let (_, _, saved_c) = with_db(|db| db.counts()).unwrap_or((0, 0, 0));
-    let (saved, _) = nav_button_with_badge("bookmark-new-symbolic", "Saved", "Stories saved to read later", saved_c);
-    if !discover_open && current == "saved" {
-        saved.add_css_class("active");
-    }
+    let saved = nav_row(&icon("user-bookmarks-symbolic"), "Saved", "Stories saved to read later", End::Badge(saved_count), on("saved"));
     saved.connect_clicked(|_| navigate(&View::Saved));
     list.append(&saved);
 
-    let group = widgets::label("TOPICS", "nav-group");
-    group.add_css_class("compact-hide");
-    nyx_ui::sidebar::set_section(&group, "topics");
-    list.append(&group);
-
+    nav_group(&list, "Topics", "swatch-violet", false, None);
     let disabled = prefs::get().disabled_categories;
-    let sections: Vec<_> = nyx_news_core::directory()
-        .map(|topics| topics.into_iter().map(|topic| topic.title).filter(|name| !disabled.contains(name)).collect::<Vec<_>>())
+    let sections = with_db(|db| db.feed_sections()).unwrap_or_default();
+    let topics: Vec<String> = nyx_news_core::directory()
+        .map(|topics| topics.into_iter().map(|topic| topic.title).filter(|name| !disabled.contains(name)).collect())
         .unwrap_or_default();
-    for name in sections {
-        let (button, _) = nav_button(section_icon(&name), &name, &format!("{name} news"));
-        if !discover_open && current == "all" && open_section == name {
-            button.add_css_class("active");
-        }
-        let section = name.clone();
-        button.connect_clicked(move |_| {
-            timeline::show_section(&section);
-            navigate(&View::All);
-            worker::open_section(section.clone());
-        });
+    for name in topics {
+        let unread: i64 = sections.iter().filter(|(_, topic)| *topic == name).map(|(feed, _)| recent.get(feed).copied().unwrap_or(0)).sum();
+        let button = nav_row(&look::dot(&name), &name, &format!("{name}: {unread} new today"), End::Count(unread), on("all") && open_section == name);
+        button.connect_clicked(move |_| open_topic(&name));
         list.append(&button);
     }
-
-    let topics = with_db(|db| db.smart_filters()).unwrap_or_default();
-    for topic in topics {
-        let (button, _) = nav_button("tag-symbolic", &topic.name, &format!("Articles matching {}", topic.name));
+    for topic in with_db(|db| db.smart_filters()).unwrap_or_default() {
         let id = topic.id.clone();
-        if current == format!("topic:{id}") && !discover_open {
-            button.add_css_class("active");
-        }
+        let button = nav_row(&look::dot(&topic.name), &topic.name, &format!("Stories that mention {}", topic.name), End::None, on(&format!("topic:{id}")));
         button.connect_clicked(move |_| navigate(&View::Topic(id.clone())));
         list.append(&button);
     }
 
-    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    spacer.set_vexpand(true);
-    list.append(&spacer);
-
-    let (sources, _) = nav_button("find-location-symbolic", "Channels & Topics", "Browse and follow topics and publications");
-    if discover_open {
-        sources.add_css_class("active");
+    nav_group(&list, "Following", "swatch-amber", false, Some(("Follow a feed (Ctrl+N)", dialogs::add_feed)));
+    let publications = source::publications(&feeds, &recent);
+    let all = ALL_PUBLICATIONS.with(|a| a.get());
+    for (index, publication) in publications.iter().enumerate() {
+        let view = View::Feeds(publication.feeds.clone());
+        let active = on(&section_id(&view));
+        if !all && index >= FOLLOWING_SHOWN && !active {
+            continue;
+        }
+        let button = nav_row(
+            &icon("application-rss+xml-symbolic"),
+            &publication.name,
+            &format!("{}: {} new today", publication.name, publication.unread),
+            End::Count(publication.unread),
+            active,
+        );
+        button.connect_clicked(move |_| navigate(&view));
+        list.append(&button);
     }
-    sources.connect_clicked(|_| show_discover());
-    list.append(&sources);
+    if publications.len() > FOLLOWING_SHOWN {
+        let (title, tip) = if all {
+            ("Fewer publications".to_string(), "Show the publications with the most new stories")
+        } else {
+            (format!("All {} publications", publications.len()), "Show every publication you follow")
+        };
+        let more = nav_row(&icon("view-more-horizontal-symbolic"), &title, tip, End::None, false);
+        more.add_css_class("nav-more");
+        more.add_css_class("compact-hide");
+        more.connect_clicked(|_| {
+            ALL_PUBLICATIONS.with(|a| a.set(!a.get()));
+            rebuild_nav();
+        });
+        list.append(&more);
+    }
+    let channels = nav_row(
+        &icon("nyx-news-compass-symbolic"),
+        "Channels and topics",
+        "Follow topics and publications",
+        End::None,
+        discover_open,
+    );
+    channels.connect_clicked(|_| show_discover());
+    list.append(&channels);
+
+    if let Some(at) = feeds.iter().filter_map(|f| f.last_ok_at).max() {
+        let foot = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        foot.add_css_class("nav-foot");
+        foot.add_css_class("compact-hide");
+        let failing = feeds.iter().filter(|f| f.consecutive_failures > 0).count();
+        let mark = gtk::Image::from_icon_name(if failing > 0 { "dialog-warning-symbolic" } else { "object-select-symbolic" });
+        mark.add_css_class("status-icon");
+        mark.add_css_class(if failing > 0 { "warn" } else { "ok" });
+        foot.append(&mark);
+        let text = widgets::label(&source::updated(at), "status-readout");
+        text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        foot.append(&text);
+        if failing > 0 {
+            foot.set_tooltip_text(Some(&if failing == 1 {
+                "1 feed didn't refresh".to_string()
+            } else {
+                format!("{failing} feeds didn't refresh")
+            }));
+        }
+        list.append(&foot);
+    }
 
     let nav = ui.borrow().nav.clone();
     apply_compact(&nav, NARROW.with(|n| n.get()) || prefs::get().sidebar_collapsed);
@@ -491,12 +573,21 @@ fn build(app: &gtk::Application) {
 
     // The search, always in the header (Ctrl+F or /).
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search articles  (Ctrl+F)"));
+    search.set_placeholder_text(Some("Search stories"));
     search.add_css_class("bar-search");
     search.set_width_chars(SEARCH_WIDE);
-    search.update_property(&[gtk::accessible::Property::Label("Search articles")]);
+    search.update_property(&[gtk::accessible::Property::Label("Search stories")]);
     search.connect_search_changed(|_| reload());
     search.connect_stop_search(|entry| entry.set_text(""));
+    let search_box = gtk::Overlay::new();
+    search_box.set_child(Some(&search));
+    let hint = widgets::label("Ctrl F", "key-hint");
+    hint.set_halign(gtk::Align::End);
+    hint.set_valign(gtk::Align::Center);
+    hint.set_margin_end(10);
+    hint.set_can_target(false);
+    search_box.add_overlay(&hint);
+    search.connect_changed(move |s| hint.set_visible(s.text().is_empty()));
 
     let pages = timeline::build();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -505,18 +596,30 @@ fn build(app: &gtk::Application) {
     content.append(&pages);
 
     // ----- Header -----
-    // The app and the page, the sidebar toggle; the search in the middle; Settings at
-    // the end. The page's own toolbar carries its count, Refresh and layout.
+    // The app and the sidebar toggle; the search in the middle; Follow and Settings at
+    // the end. The page's own bar carries its name, count, layout and Refresh.
     let header = chrome::app_header(&window, "application-rss+xml-symbolic", "News");
     let collapse = widgets::bar_button("sidebar-show-symbolic", "Collapse the sidebar (Ctrl+B)");
     collapse.connect_clicked(|_| toggle_sidebar());
     header.start.append(&collapse);
-    header.center.append(&search);
+    header.center.append(&search_box);
+    let follow = gtk::Button::new();
+    follow.add_css_class("new-button");
+    follow.set_tooltip_text(Some("Follow a feed (Ctrl+N)"));
+    let face = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    face.append(&gtk::Image::from_icon_name("list-add-symbolic"));
+    face.append(&gtk::Label::new(Some("Follow")));
+    face.append(&widgets::label("Ctrl N", "key-hint"));
+    follow.set_child(Some(&face));
+    follow.set_valign(gtk::Align::Center);
+    follow.connect_clicked(|_| dialogs::add_feed());
+    header.end.append(&follow);
     header.end.append(&chrome::settings_button(settings_dialog::open));
 
     let frame = nyx_ui::frame::AppFrame::new(&header.root);
     frame.set_sidebar(&nav);
     frame.set_page(&content);
+    frame.set_flush(true);
     let overlay = frame.install(&window);
     install_keys(&window, &search);
 
@@ -526,7 +629,6 @@ fn build(app: &gtk::Application) {
         nav: nav.clone(),
         nav_list: list,
         search,
-        header,
         view: View::All,
         articles: Vec::new(),
         selected: None,
@@ -548,6 +650,7 @@ fn build(app: &gtk::Application) {
             nav.add_css_class("sized");
             NARROW.with(|n| n.set(narrow));
             apply_compact(&nav, narrow || prefs::get().sidebar_collapsed);
+            reader::set_narrow(narrow);
             // A tiled half-screen header gets a shorter search.
             if let Some(ui) = self::ui() {
                 ui.borrow().search.set_width_chars(if narrow { SEARCH_NARROW } else { SEARCH_WIDE });
@@ -584,6 +687,9 @@ fn apply_compact(nav: &gtk::Box, compact: bool) {
     fn walk(widget: &gtk::Widget, compact: bool) {
         if widget.has_css_class("compact-hide") {
             widget.set_visible(!compact);
+        }
+        if widget.has_css_class("compact-show") {
+            widget.set_visible(compact);
         }
         // Icon-only: centre the icon in its row. The header buttons are already centred.
         if widget.has_css_class("nav-item")

@@ -7,8 +7,8 @@ use gtk::prelude::*;
 use nyx_news_core::canonical_url;
 
 pub fn add_feed() {
-    let (dialog, card) = widgets::dialog("Add a feed", 480);
-    let hint = widgets::label("RSS, Atom, or JSON Feed address", "dim");
+    let (dialog, card) = widgets::dialog("Follow a feed", 480);
+    let hint = widgets::label("An RSS, Atom or JSON feed address. To find a website's feeds, use Channels and topics.", "dim");
     hint.set_xalign(0.0);
     hint.set_wrap(true);
     card.append(&hint);
@@ -22,7 +22,7 @@ pub fn add_feed() {
     let cancel = gtk::Button::with_label("Not now");
     let dialog_cancel = dialog.clone();
     cancel.connect_clicked(move |_| dialog_cancel.close());
-    let add = gtk::Button::with_label("Add");
+    let add = gtk::Button::with_label("Follow");
     add.add_css_class("suggested-action");
     let dialog_add = dialog.clone();
     let entry_add = entry.clone();

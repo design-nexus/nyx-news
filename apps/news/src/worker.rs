@@ -17,6 +17,7 @@ enum Job {
     RefreshOne(String),
     Sync { manual: bool },
     Brief { task: String, articles: Vec<Excerpt>, generation: u64 },
+    Speak(String),
     FillPaper,
     OpenSection(String),
     Covers(Vec<String>),
@@ -51,6 +52,9 @@ pub fn start() {
                             Some(Job::Sync { manual }) => sync_job(manual, &mut last_sync).await,
                             Some(Job::Brief { task, articles, generation }) => {
                                 tokio::spawn(async move { run_brief(task, articles, generation).await });
+                            }
+                            Some(Job::Speak(text)) => {
+                                tokio::spawn(async move { speak_now(text).await });
                             }
                             Some(Job::FillPaper) => {
                                 tokio::spawn(async move { fill_paper().await });
@@ -130,6 +134,13 @@ pub fn brief(task: String, articles: Vec<Excerpt>, generation: u64) {
     }
 }
 
+/// Has Assistant read `text` aloud.
+pub fn speak(text: String) {
+    if let Some(tx) = TX.get() {
+        let _ = tx.send(Job::Speak(text));
+    }
+}
+
 pub fn covers(urls: Vec<String>) {
     if urls.is_empty() {
         return;
@@ -161,18 +172,17 @@ pub fn open_section(name: String) {
 }
 
 pub fn refresh_current() {
-    let id = match window::view() {
-        nyx_news_core::View::Feed(id) => Some(id),
-        _ => None,
+    let ids = match window::view() {
+        nyx_news_core::View::Feed(id) => vec![id],
+        nyx_news_core::View::Feeds(ids) => ids,
+        _ => Vec::new(),
     };
     if let Some(tx) = TX.get() {
-        match id {
-            Some(id) => {
-                let _ = tx.send(Job::RefreshOne(id));
-            }
-            None => {
-                let _ = tx.send(Job::RefreshDue);
-            }
+        if ids.is_empty() {
+            let _ = tx.send(Job::RefreshDue);
+        }
+        for id in ids {
+            let _ = tx.send(Job::RefreshOne(id));
         }
     }
 }
@@ -227,6 +237,10 @@ async fn find_feeds_now(url: String) {
 fn lookup_feeds(url: &str) -> anyhow::Result<Vec<nyx_news_core::DiscoveredFeed>> {
     let fetched = get(url, &opts(url))?;
     let nyx_news_core::FetchResult::Body(body) = fetched else { anyhow::bail!("the page was empty") };
+    if let Ok(parsed) = parse_feed(&body.bytes) {
+        let title = if parsed.title.is_empty() { body.final_url.clone() } else { parsed.title };
+        return Ok(vec![nyx_news_core::DiscoveredFeed { title, url: body.final_url }]);
+    }
     let html = String::from_utf8_lossy(&body.bytes);
     nyx_news_core::discover_in_html(&html, &body.final_url)
 }
@@ -655,6 +669,25 @@ async fn run_brief(task: String, articles: Vec<Excerpt>, generation: u64) {
         on_main(move || crate::timeline::apply_daily_brief(result));
     } else {
         on_main(move || crate::reader::apply_brief(generation, result));
+    }
+}
+
+async fn speak_now(text: String) {
+    if !prefs::get().summaries {
+        return;
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client = crate::assistant_client::Client;
+        nyx_news_core::Assistant::speak(&mut client, &text)
+    })
+    .await;
+    let failure = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(err)) => Some(err.message()),
+        Err(_) => Some("Reading aloud stopped.".to_string()),
+    };
+    if let Some(message) = failure {
+        on_main(move || window::toast(&message));
     }
 }
 
