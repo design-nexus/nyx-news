@@ -34,8 +34,10 @@ under `~/.cache/nyx-news/` when “Keep feed content” is on.
 | Library | `~/.local/share/nyx-news/news.sqlite` |
 | Cache | `~/.cache/nyx-news/` |
 
-Sync, publication discovery, and local summaries are reserved in the schema and the
-settings card. They are off in this version.
+Your library's changes and settings sync between computers through a Nextcloud server
+(WebDAV, with an app password kept in the keyring) when turned on in Settings › Sync;
+article text and summaries stay on each computer. Summaries ask Nyx
+Assistant and stay off until turned on; recommendations stay on this computer.
 
 ## Keys
 
