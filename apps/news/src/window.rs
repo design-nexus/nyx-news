@@ -525,15 +525,17 @@ fn rebuild_nav() {
         mark.add_css_class("status-icon");
         mark.add_css_class(if failing > 0 { "warn" } else { "ok" });
         foot.append(&mark);
-        let text = widgets::label(&source::updated(at), "status-readout");
+        // A warning mark says what's wrong in words, not only in a tooltip.
+        let problem = match failing {
+            0 => None,
+            1 => Some("1 feed didn't refresh".to_string()),
+            n => Some(format!("{n} feeds didn't refresh")),
+        };
+        let text = widgets::label(problem.as_deref().unwrap_or(&source::updated(at)), "status-readout");
         text.set_ellipsize(gtk::pango::EllipsizeMode::End);
         foot.append(&text);
-        if failing > 0 {
-            foot.set_tooltip_text(Some(&if failing == 1 {
-                "1 feed didn't refresh".to_string()
-            } else {
-                format!("{failing} feeds didn't refresh")
-            }));
+        if problem.is_some() {
+            foot.set_tooltip_text(Some(&source::updated(at)));
         }
         list.append(&foot);
     }
