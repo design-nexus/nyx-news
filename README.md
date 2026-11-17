@@ -1,12 +1,14 @@
 # News
 
-A local news reader for [Omarchy](https://omarchy.org). It subscribes to RSS, Atom,
-and JSON feeds, keeps articles in SQLite, and takes its colors from your Omarchy theme.
+A local news reader for NyxOS and [Omarchy](https://omarchy.org). It subscribes to RSS, Atom,
+and JSON feeds, keeps articles in SQLite, and takes its colors from the desktop theme.
 
 Reading works offline after a feed has been fetched once. News does not call a news
 service, and it does not load an AI model to open or search articles.
 
 ## Install
+
+On NyxOS, choose News in Welcome when you set up, or install it later from the Store or with `nyx install nyx-news`. On Omarchy:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-news/main/install.sh | bash
